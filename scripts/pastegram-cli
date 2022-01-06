@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+from pastegram import upload_paste, fetch_paste
+from pastegram.constants import API_ENDPOINT
+from argparse import ArgumentParser
+import sys
+import requests
+import os
+import stat
+
+
+def get_argument_safe(obj, arg, default: bool = None):
+    if hasattr(obj, arg):
+        return getattr(obj, arg)
+    return default
+
+
+def upload(args):
+    filename = get_argument_safe(args, 'filename')
+    upload_filename = get_argument_safe(args, 'upload_filename')
+    force = get_argument_safe(args, 'force', default=False)
+
+    if filename is None:
+        # read from stdin
+        # before reading from stdin, let's check the input is piped, unless the --force flag is provided
+        if not force:
+            mode = os.fstat(sys.stdin.fileno()).st_mode
+            if not stat.S_ISFIFO(mode) or stat.S_ISREG(mode):
+                print('Seems like you\'re trying to upload a file from STDIN but STDIN is not piped or redirected. Use the --force flag to override.')
+                print()
+                return False
+        source = sys.stdin.buffer
+    else:
+        source = open(filename, 'rb')
+
+    # buffer the entire file in RAM
+    # pastes should be <= 1MiB, so this isn't an issue
+    buffer = b''
+    while chunk := source.read():
+        buffer += chunk
+    source.close()
+    paste = upload_paste(buffer)
+
+    print(f'Delete token: {paste.token}')
+    print(f'URL: {paste.get_url()}')
+
+
+def fetch(args):
+    url = args.url
+    output = args.output
+    if output is None:
+        destination = sys.stdout
+    else:
+        destination = open(output, 'w')
+
+    paste_contents = fetch_paste(url)
+    destination.write(paste_contents)
+
+
+def delete(args):
+    token: str = args.token
+    response = requests.get(f'{API_ENDPOINT}delete/{token}')
+    if response.status_code != 200:
+        print(f'Invalid status_code in response: {response.status_code}')
+        return
+    if response.json()['ok']:
+        print('Paste deleted successfully.')
+        return
+    print('Received invalid response: ' + response.text)
+
+
+def main():
+    argparser = ArgumentParser()
+    subparsers = argparser.add_subparsers(dest='subparser')
+    upload_parser = subparsers.add_parser(
+        'upload', help='upload a new paste (default)')
+    upload_parser.add_argument(
+        'filename', help='Which file to upload (if left empty, will read from stdin)', nargs='?')
+    upload_parser.add_argument(
+        '--upload-filename', help='The filename to use on the upload', default='paste')
+    upload_parser.add_argument(
+        '-f', '--force', help='Force reading from STDIN even when it is not piped', action='store_true')
+
+    fetch_parser = subparsers.add_parser('fetch', help='fetch a paste')
+    fetch_parser.add_argument('url', help='The paste\'s url')
+    fetch_parser.add_argument(
+        '-o', '--output', help='Write to file instead of outputting to STDOUT', required=False)
+
+    delete_parser = subparsers.add_parser('delete', help='delete a paste')
+    delete_parser.add_argument('token',
+                               help='The delete token provided to you after a paste upload')
+    args = argparser.parse_args()
+
+    if args.subparser == 'delete':
+        delete(args)
+    elif args.subparser == 'fetch':
+        fetch(args)
+    else:
+        if upload(args) is False:
+            argparser.print_usage()
+
+
+if __name__ == '__main__':
+    main()
